@@ -205,12 +205,18 @@ private struct MenuBarStatsLabel: View {
     let symbol: String
     let stats: SystemStats
     let ai: AIUsage
+    let awake: Bool
 
     var body: some View {
         let groups: [[MenuBarItem]] = [[.volume], [.cpu, .memory, .disk], [.network], [.power], [.claude, .codex]]
             .map { $0.filter { items.contains($0) && ($0 != .power || stats.battery != nil) } }
             .filter { !$0.isEmpty }
         HStack(spacing: 5) {
+            if awake { // keep-awake session indicator, always leftmost
+                Image(systemName: "cup.and.saucer.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 16)
+            }
             ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
                 if index > 0 { separator }
                 ForEach(group, id: \.self) { cell($0) }
@@ -309,8 +315,10 @@ private struct MiniBattery: View {
 
 /// Status item image: the custom layout rasterized as a template so the menu bar tints it.
 @MainActor
-func menuBarStatsImage(items: Set<MenuBarItem>, symbol: String, stats: SystemStats, ai: AIUsage) -> NSImage {
-    let renderer = ImageRenderer(content: MenuBarStatsLabel(items: items, symbol: symbol, stats: stats, ai: ai))
+func menuBarStatsImage(items: Set<MenuBarItem>, symbol: String, stats: SystemStats, ai: AIUsage,
+                       awake: Bool) -> NSImage {
+    let renderer = ImageRenderer(content: MenuBarStatsLabel(items: items, symbol: symbol, stats: stats, ai: ai,
+                                                            awake: awake))
     renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
     let image = renderer.nsImage ?? NSImage()
     image.isTemplate = true

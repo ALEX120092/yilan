@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let mixer = Mixer()
     private let stats = SystemStats()
     private let ai = AIUsage()
+    private let awake = KeepAwake()
     private let popover = NSPopover()
     private var statusItem: NSStatusItem!
     private var cancellables = Set<AnyCancellable>()
@@ -35,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         stats.$menuBarItems
             .sink { [weak self] items in self?.ai.menuBarActive = !items.isDisjoint(with: [.claude, .codex]) }
             .store(in: &cancellables)
-        mixer.objectWillChange.merge(with: stats.objectWillChange, ai.objectWillChange)
+        mixer.objectWillChange.merge(with: stats.objectWillChange, ai.objectWillChange, awake.objectWillChange)
             .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
             .sink { [weak self] in self?.updateStatusImage() }
             .store(in: &cancellables)
@@ -44,7 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func updateStatusImage() {
         statusItem.button?.image = menuBarStatsImage(items: stats.menuBarItems,
-                                                     symbol: mixer.menuBarSymbol, stats: stats, ai: ai)
+                                                     symbol: mixer.menuBarSymbol, stats: stats, ai: ai,
+                                                     awake: awake.isActive)
     }
 
     @objc private func statusItemClicked() {
@@ -52,17 +54,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
             popover.performClose(nil)
             showMenu()
+        } else if event?.modifierFlags.contains(.option) == true {
+            awake.toggle() // Option-click: quick keep-awake on/off, like Amphetamine
         } else if popover.isShown {
             popover.performClose(nil)
         } else if let button = statusItem.button {
             // A fresh hosting controller per open, so onAppear/onDisappear start and stop sampling.
             let host = NSHostingController(rootView: PopoverView()
-                .environmentObject(mixer).environmentObject(stats).environmentObject(ai))
+                .environmentObject(mixer).environmentObject(stats).environmentObject(ai).environmentObject(awake))
             host.sizingOptions = .preferredContentSize
             popover.contentViewController = host
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        awake.stop() // releases the assertion and turns pmset disablesleep back off
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -85,6 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             menu.addItem(entry)
         }
         menu.addItem(.separator())
+        menu.addItem(awakeMenuItem())
+        menu.addItem(.separator())
         let login = NSMenuItem(title: "登录时启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
         login.target = self
         login.state = mixer.launchAtLogin ? .on : .off
@@ -102,6 +112,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if stats.menuBarItems.contains(item) { stats.menuBarItems.remove(item) } else { stats.menuBarItems.insert(item) }
     }
 
+    private func awakeMenuItem() -> NSMenuItem {
+        var title = "保持唤醒"
+        if awake.isActive { title += awake.endDate.map { "（剩余 \(awakeRemaining(until: $0))）" } ?? "（无限期）" }
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.state = awake.isActive ? .on : .off
+        let sub = NSMenu()
+        for (index, option) in KeepAwake.durations.enumerated() {
+            let entry = NSMenuItem(title: option.title, action: #selector(startAwake(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.tag = index
+            sub.addItem(entry)
+        }
+        sub.addItem(.separator())
+        let display = NSMenuItem(title: "允许屏幕关闭（仅阻止系统睡眠）", action: #selector(toggleAwakeDisplay), keyEquivalent: "")
+        display.target = self
+        display.state = awake.allowDisplaySleep ? .on : .off
+        sub.addItem(display)
+        let lid = NSMenuItem(title: awake.lidHelperInstalled ? "合盖也保持唤醒" : "合盖也保持唤醒（需安装辅助）…",
+                             action: #selector(toggleAwakeLid), keyEquivalent: "")
+        lid.target = self
+        lid.state = awake.closedLid ? .on : .off
+        sub.addItem(lid)
+        if awake.lidHelperInstalled {
+            let remove = NSMenuItem(title: "移除合盖辅助…", action: #selector(removeLidHelper), keyEquivalent: "")
+            remove.target = self
+            sub.addItem(remove)
+        }
+        if awake.isActive {
+            sub.addItem(.separator())
+            let stop = NSMenuItem(title: "停止", action: #selector(stopAwake), keyEquivalent: "")
+            stop.target = self
+            sub.addItem(stop)
+        }
+        item.submenu = sub
+        return item
+    }
+
+    @objc private func startAwake(_ sender: NSMenuItem) {
+        awake.start(for: KeepAwake.durations[sender.tag].seconds)
+    }
+
+    @objc private func stopAwake() { awake.stop() }
+
+    @objc private func toggleAwakeDisplay() { awake.allowDisplaySleep.toggle() }
+
+    @objc private func toggleAwakeLid() { awake.setClosedLid(!awake.closedLid) }
+
+    @objc private func removeLidHelper() { awake.uninstallLidHelper() }
+
     @objc private func toggleLaunchAtLogin() {
         mixer.launchAtLogin.toggle()
     }
@@ -118,6 +177,7 @@ struct PopoverView: View {
     @EnvironmentObject private var mixer: Mixer
     @EnvironmentObject private var stats: SystemStats
     @EnvironmentObject private var ai: AIUsage
+    @EnvironmentObject private var awake: KeepAwake
     @AppStorage("popoverTab") private var tab = PopoverTab.volume
 
     var body: some View {
@@ -144,10 +204,60 @@ struct PopoverView: View {
             }
 
             Divider()
+            awakeRow
+            Divider()
             footer
         }
         .padding(14)
         .frame(width: 320)
+    }
+
+    private var awakeRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: awake.isActive ? "cup.and.saucer.fill" : "cup.and.saucer")
+                .foregroundStyle(awake.isActive ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("保持唤醒")
+                Group {
+                    if !awake.isActive {
+                        Text(awake.stoppedForBattery ? "电量低于 \(percent(KeepAwake.lowBatteryCutoff))，已自动停止"
+                                                     : "未开启 · " + modeText)
+                    } else if let end = awake.endDate {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text("剩余 \(awakeRemaining(until: end, now: context.date)) · " + modeText)
+                        }
+                    } else {
+                        Text("无限期 · " + modeText)
+                    }
+                }
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Menu {
+                ForEach(Array(KeepAwake.durations.enumerated()), id: \.offset) { _, option in
+                    Button(option.title) { awake.start(for: option.seconds) }
+                }
+                Divider()
+                Toggle("允许屏幕关闭（仅阻止系统睡眠）", isOn: $awake.allowDisplaySleep)
+                Toggle(awake.lidHelperInstalled ? "合盖也保持唤醒" : "合盖也保持唤醒（需安装辅助）…",
+                       isOn: Binding(get: { awake.closedLid }, set: { awake.setClosedLid($0) }))
+            } label: {
+                Text("时长")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            Toggle("", isOn: Binding(get: { awake.isActive }, set: { $0 ? awake.start(for: nil) : awake.stop() }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+        }
+    }
+
+    private var modeText: String {
+        (awake.allowDisplaySleep ? "允许屏幕关闭" : "屏幕常亮") + (awake.closedLid ? " · 合盖" : "")
     }
 
     private var footer: some View {
