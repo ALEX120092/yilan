@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let stats = SystemStats()
     private let ai = AIUsage()
     private let awake = KeepAwake()
+    private let messages = MessageWatcher()
     private let popover = NSPopover()
     private var statusItem: NSStatusItem!
     private var cancellables = Set<AnyCancellable>()
@@ -34,9 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         popover.delegate = self
 
         stats.$menuBarItems
-            .sink { [weak self] items in self?.ai.menuBarActive = !items.isDisjoint(with: [.claude, .codex]) }
+            .sink { [weak self] items in
+                self?.ai.menuBarActive = !items.isDisjoint(with: [.claude, .codex])
+                self?.messages.menuBarActive = items.contains(.messages)
+            }
             .store(in: &cancellables)
-        mixer.objectWillChange.merge(with: stats.objectWillChange, ai.objectWillChange, awake.objectWillChange)
+        mixer.objectWillChange.merge(with: stats.objectWillChange, ai.objectWillChange, awake.objectWillChange,
+                                           messages.objectWillChange)
             .debounce(for: .milliseconds(50), scheduler: RunLoop.main)
             .sink { [weak self] in self?.updateStatusImage() }
             .store(in: &cancellables)
@@ -46,7 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func updateStatusImage() {
         statusItem.button?.image = menuBarStatsImage(items: stats.menuBarItems,
                                                      symbol: mixer.menuBarSymbol, stats: stats, ai: ai,
-                                                     awake: awake.isActive)
+                                                     awake: awake.isActive, messages: messages)
     }
 
     @objc private func statusItemClicked() {
@@ -60,8 +65,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             popover.performClose(nil)
         } else if let button = statusItem.button {
             // A fresh hosting controller per open, so onAppear/onDisappear start and stop sampling.
-            let host = NSHostingController(rootView: PopoverView()
-                .environmentObject(mixer).environmentObject(stats).environmentObject(ai).environmentObject(awake))
+            let host = NSHostingController(rootView: PopoverView(dismiss: { [weak self] in self?.popover.performClose(nil) })
+                .environmentObject(mixer).environmentObject(stats).environmentObject(ai).environmentObject(awake)
+                .environmentObject(messages))
             host.sizingOptions = .preferredContentSize
             popover.contentViewController = host
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
@@ -170,6 +176,7 @@ enum PopoverTab: String, CaseIterable {
     case volume = "音量"
     case status = "状态"
     case ai = "AI"
+    case messages = "消息"
 }
 
 /// One menu bar item, two pages: the mixer and system status.
@@ -178,6 +185,8 @@ struct PopoverView: View {
     @EnvironmentObject private var stats: SystemStats
     @EnvironmentObject private var ai: AIUsage
     @EnvironmentObject private var awake: KeepAwake
+    @EnvironmentObject private var messages: MessageWatcher
+    var dismiss: () -> Void = {}
     @AppStorage("popoverTab") private var tab = PopoverTab.volume
 
     var body: some View {
@@ -201,6 +210,10 @@ struct PopoverView: View {
                 AIView()
                     .onAppear { ai.setVisible(true) }
                     .onDisappear { ai.setVisible(false) }
+            case .messages:
+                MessagesView(dismiss: dismiss)
+                    .onAppear { messages.setVisible(true) }
+                    .onDisappear { messages.setVisible(false) }
             }
 
             Divider()

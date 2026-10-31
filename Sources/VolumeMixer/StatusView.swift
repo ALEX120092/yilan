@@ -206,10 +206,12 @@ private struct MenuBarStatsLabel: View {
     let stats: SystemStats
     let ai: AIUsage
     let awake: Bool
+    let messages: MessageWatcher
 
     var body: some View {
-        let groups: [[MenuBarItem]] = [[.volume], [.cpu, .memory, .disk], [.network], [.power], [.claude, .codex]]
-            .map { $0.filter { items.contains($0) && ($0 != .power || stats.battery != nil) } }
+        let groups: [[MenuBarItem]] = [[.messages], [.volume], [.cpu, .memory, .disk], [.network], [.power], [.claude, .codex]]
+            .map { $0.filter { items.contains($0) && ($0 != .power || stats.battery != nil)
+                               && ($0 != .messages || messages.totalUnread > 0 || messages.hasUnmarkedBadge) } }
             .filter { !$0.isEmpty }
         HStack(spacing: 5) {
             if awake { // keep-awake session indicator, always leftmost
@@ -254,6 +256,15 @@ private struct MenuBarStatsLabel: View {
         case .claude:
             metric(width: 36) { Text("CLAUDE") } value: { Text(ai.plan?.fivePercent.map { "\(Int($0.rounded()))%" }
                                                                  ?? ai.block.map { compactTokens($0.totals.total) } ?? "0") }
+        case .messages:
+            HStack(spacing: 2) {
+                Image(systemName: "bubble.left.fill").font(.system(size: 11, weight: .medium))
+                if messages.totalUnread > 0 {
+                    Text(messages.totalUnread > 99 ? "99+" : "\(messages.totalUnread)")
+                        .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                }
+            }
+            .fixedSize()
         case .codex:
             metric(width: 34) { Text("CODEX") } value: { Text(ai.codexCurrentPercent.map { "\(Int($0.rounded()))%" } ?? "—") }
         }
@@ -316,9 +327,9 @@ private struct MiniBattery: View {
 /// Status item image: the custom layout rasterized as a template so the menu bar tints it.
 @MainActor
 func menuBarStatsImage(items: Set<MenuBarItem>, symbol: String, stats: SystemStats, ai: AIUsage,
-                       awake: Bool) -> NSImage {
+                       awake: Bool, messages: MessageWatcher) -> NSImage {
     let renderer = ImageRenderer(content: MenuBarStatsLabel(items: items, symbol: symbol, stats: stats, ai: ai,
-                                                            awake: awake))
+                                                            awake: awake, messages: messages))
     renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
     let image = renderer.nsImage ?? NSImage()
     image.isTemplate = true

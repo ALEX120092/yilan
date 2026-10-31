@@ -16,7 +16,7 @@ struct BatteryInfo: Equatable {
 
 /// Readouts that can be shown in the menu bar; picked from the status item's right-click menu.
 enum MenuBarItem: String, CaseIterable {
-    case volume, cpu, memory, disk, network, power, claude, codex
+    case volume, cpu, memory, disk, network, power, claude, codex, messages
 
     static let systemItems: Set<MenuBarItem> = [.cpu, .memory, .disk, .network, .power]
 
@@ -30,6 +30,7 @@ enum MenuBarItem: String, CaseIterable {
         case .power: return "电池与功率"
         case .claude: return "Claude 用量"
         case .codex: return "Codex 限额"
+        case .messages: return "消息未读（微信 / QQ）"
         }
     }
 }
