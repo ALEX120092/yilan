@@ -1,12 +1,17 @@
 import SwiftUI
 import Combine
 
+/// Plain AppKit entry point: a SwiftUI `App` needs at least one scene, and its placeholder
+/// Settings window popped up empty whenever the app was activated or reopened.
 @main
-struct VolumeMixerApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-
-    var body: some Scene {
-        Settings { EmptyView() }
+enum VolumeMixerApp {
+    static func main() {
+        MainActor.assumeIsolated {
+            let delegate = AppDelegate()
+            let app = NSApplication.shared
+            app.delegate = delegate
+            app.run()
+        }
     }
 }
 
